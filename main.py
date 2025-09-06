@@ -22,7 +22,6 @@ import os
 import google.generativeai as genai
 from typing import Dict, List, Any
 import re
-import json
 from dotenv import load_dotenv
 warnings.filterwarnings('ignore')
 
