@@ -42,9 +42,13 @@ st.set_page_config(
 # Initialize Gemini API
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    # Use gemini-2.5-flash (available model from the list)
-    gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        # Use a model that is likely to be available, e.g., gemini-pro
+        gemini_model = genai.GenerativeModel('gemini-pro')
+    except Exception as e:
+        gemini_model = None
+        st.error(f"🔴 Failed to configure Gemini API: {e}")
 else:
     gemini_model = None
     st.error("🔴 Gemini API key not found. Please check your .env file.")
@@ -267,8 +271,8 @@ def prepare_data_context(df_perf, df_shap, df_lime, df_overlap, genai_explanatio
         "data_summary": {
             "models_count": len(df_perf) if df_perf is not None else 0,
             "features_count": len(df_shap) if df_shap is not None else 0,
-            "best_model": df_perf['f1'].idxmax() if df_perf is not None and 'f1' in df_perf.columns else "Unknown",
-            "best_f1": df_perf['f1'].max() if df_perf is not None and 'f1' in df_perf.columns else 0
+            "best_model": df_perf['f1'].idxmax() if df_perf is not None and 'f1' in df_perf.columns and not df_perf.empty else "Unknown",
+            "best_f1": df_perf['f1'].max() if df_perf is not None and 'f1' in df_perf.columns and not df_perf.empty else 0
         }
     }
     return context
@@ -316,20 +320,18 @@ def ai_analyze_plot_request(user_request: str, context: Dict[str, Any]) -> Dict[
         response = gemini_model.generate_content(analysis_prompt)
         
         # Parse the JSON response
-        import json
         try:
             plot_specs = json.loads(response.text.strip())
             return plot_specs
         except json.JSONDecodeError:
             # If JSON parsing fails, try to extract JSON from the response
-            import re
             json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
             if json_match:
                 plot_specs = json.loads(json_match.group())
                 return plot_specs
             else:
                 return {"error": "Could not parse AI response"}
-                
+            
     except Exception as e:
         return {"error": f"AI analysis failed: {str(e)}"}
 
@@ -398,29 +400,36 @@ def create_custom_performance_plot(models: List[str], metrics: List[str], title:
             )
         else:
             # Multiple metrics
+            df_plot = df_perf.reset_index().melt(id_vars='index', var_name='Metric', value_name='Score')
             fig = px.bar(
-                df_perf.reset_index(),
+                df_plot,
                 x='index',
-                y=df_perf.columns.tolist(),
+                y='Score',
+                color='Metric',
                 title=title,
-                labels={'index': 'Models', 'value': 'Score'},
+                labels={'index': 'Models'},
                 barmode='group'
             )
     elif chart_type == "line":
+        df_plot = df_perf.reset_index().melt(id_vars='index', var_name='Metric', value_name='Score')
         fig = px.line(
-            df_perf.reset_index(),
+            df_plot,
             x='index',
-            y=df_perf.columns.tolist(),
+            y='Score',
+            color='Metric',
             title=title,
-            labels={'index': 'Models', 'value': 'Score'}
+            labels={'index': 'Models'}
         )
     else:
         # Default to bar
+        df_plot = df_perf.reset_index().melt(id_vars='index', var_name='Metric', value_name='Score')
         fig = px.bar(
-            df_perf.reset_index(),
+            df_plot,
             x='index',
-            y=df_perf.columns.tolist(),
+            y='Score',
+            color='Metric',
             title=title,
+            labels={'index': 'Models'},
             barmode='group'
         )
     
@@ -508,7 +517,7 @@ def create_custom_lime_plot(models: List[str], features_count: int, title: str, 
     )
     
     fig.update_layout(
-        plot_bgcolor='rgaua(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
         font_color='white',
         title_font_color='white'
@@ -709,24 +718,24 @@ st.sidebar.markdown("Upload your CSV files from the ML pipeline")
 # File uploaders
 st.sidebar.markdown("### 📁 Upload Your CSV Files")
 perf_file = st.sidebar.file_uploader("📈 Model Performance CSV", 
-                                    type=["csv"], 
-                                    key="perf",
-                                    help="Upload CSV with columns: accuracy, f1, precision, recall")
+                                     type=["csv"], 
+                                     key="perf",
+                                     help="Upload CSV with columns: accuracy, f1, precision, recall")
 
 shap_file = st.sidebar.file_uploader("🎯 SHAP Feature Importance CSV", 
-                                    type=["csv"], 
-                                    key="shap",
-                                    help="Upload CSV with features as rows, models as columns")
+                                     type=["csv"], 
+                                     key="shap",
+                                     help="Upload CSV with features as rows, models as columns")
 
 lime_file = st.sidebar.file_uploader("🍋 LIME Feature Importance CSV", 
-                                    type=["csv"], 
-                                    key="lime",
-                                    help="Upload CSV with feature rules and weights")
+                                     type=["csv"], 
+                                     key="lime",
+                                     help="Upload CSV with feature rules and weights")
 
 overlap_file = st.sidebar.file_uploader("🔗 Feature Overlap Analysis CSV", 
-                                       type=["csv"], 
-                                       key="overlap",
-                                       help="Upload CSV with overlap percentages by model")
+                                        type=["csv"], 
+                                        key="overlap",
+                                        help="Upload CSV with overlap percentages by model")
 
 # Load data
 df_perf = load_csv_file(perf_file)
@@ -813,7 +822,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 with tab1:
     st.header("🏆 Model Performance Analysis")
     
-    if df_perf is not None:
+    if df_perf is not None and not df_perf.empty:
         col1, col2 = st.columns([2, 1])
         
         with col1:
@@ -828,7 +837,7 @@ with tab1:
         
         # Model comparison insights
         st.subheader("📋 Model Analysis")
-        if 'f1' in df_perf.columns:
+        if 'f1' in df_perf.columns and not df_perf.empty:
             best_model = df_perf['f1'].idxmax()
             worst_model = df_perf['f1'].idxmin()
             
@@ -849,7 +858,7 @@ with tab1:
 with tab2:
     st.header("🎯 SHAP Feature Importance Analysis")
     
-    if df_shap is not None:
+    if df_shap is not None and not df_shap.empty:
         # Model selection for SHAP
         available_models = [col for col in df_shap.columns if col not in ['Unnamed: 0', 'index']]
         
@@ -892,4 +901,189 @@ with tab2:
                                 font_color='white',
                                 title_font_color='white'
                             )
-                           
+                            
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No non-zero SHAP values to plot for this model.")
+                    except Exception as e:
+                        st.error(f"Error generating SHAP plot: {e}")
+                
+                with col2:
+                    st.subheader("Raw SHAP Data")
+                    st.dataframe(df_shap[selected_model].sort_values(ascending=False).round(5))
+            else:
+                st.warning(f"Column '{selected_model}' not found in SHAP data.")
+    else:
+        st.warning("📤 Upload shap_importance.csv to see SHAP analysis.")
+        st.info("💡 Expected format: CSV with features as the first column and models as subsequent columns.")
+
+# =====================
+# 🍋 TAB 3: LIME ANALYSIS
+# =====================
+with tab3:
+    st.header("🍋 LIME Feature Importance Analysis")
+    
+    if df_lime is not None and not df_lime.empty:
+        available_models = [col for col in df_lime.columns if col not in ['Unnamed: 0', 'index']]
+        
+        if not available_models:
+            st.warning("No model columns found in LIME data")
+            st.dataframe(df_lime.head())
+        else:
+            selected_model = st.selectbox("Select Model for LIME Analysis", available_models)
+            
+            if selected_model in df_lime.columns:
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    try:
+                        lime_values = df_lime[selected_model]
+                        numeric_lime = pd.to_numeric(lime_values, errors='coerce')
+                        numeric_lime = numeric_lime.dropna()
+                        numeric_lime = numeric_lime[numeric_lime != 0]
+                        
+                        if len(numeric_lime) > 0:
+                            top_lime = numeric_lime.nlargest(15)
+                            
+                            fig = px.bar(
+                                x=top_lime.values,
+                                y=top_lime.index,
+                                orientation='h',
+                                title=f"🍋 Top 15 LIME Features - {selected_model}",
+                                labels={'x': 'LIME Weight', 'y': 'Feature Rules'},
+                                color=top_lime.values,
+                                color_continuous_scale='Plasma'
+                            )
+                            fig.update_layout(
+                                height=600,
+                                plot_bgcolor='rgba(0,0,0,0)',
+                                paper_bgcolor='rgba(0,0,0,0)',
+                                font_color='white',
+                                title_font_color='white'
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No non-zero LIME values to plot for this model.")
+                    except Exception as e:
+                        st.error(f"Error generating LIME plot: {e}")
+                
+                with col2:
+                    st.subheader("Raw LIME Data")
+                    st.dataframe(df_lime[selected_model].sort_values(ascending=False).round(5))
+            else:
+                st.warning(f"Column '{selected_model}' not found in LIME data.")
+    else:
+        st.warning("📤 Upload lime_importance.csv to see LIME analysis.")
+        st.info("💡 Expected format: CSV with feature rules as the first column and models as subsequent columns.")
+
+# =====================
+# 🔗 TAB 4: FEATURE OVERLAP
+# =====================
+with tab4:
+    st.header("🔗 SHAP vs. LIME Feature Overlap Analysis")
+    
+    if df_overlap is not None and not df_overlap.empty:
+        st.markdown("### 📊 Overlap Percentage by Model")
+        st.dataframe(df_overlap.round(2))
+        
+        try:
+            fig = px.bar(df_overlap, 
+                         x=df_overlap.index, 
+                         y='overlap_percentage', 
+                         title='SHAP vs. LIME Overlap Percentage by Model',
+                         labels={'overlap_percentage': 'Overlap %', 'index': 'Model'},
+                         color='overlap_percentage',
+                         color_continuous_scale='Inferno')
+            fig.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font_color='white',
+                title_font_color='white'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.subheader("📋 Overlap Insights")
+            max_overlap_model = df_overlap['overlap_percentage'].idxmax()
+            min_overlap_model = df_overlap['overlap_percentage'].idxmin()
+            
+            st.markdown(f"**Highest Overlap**: {max_overlap_model} with {df_overlap.loc[max_overlap_model, 'overlap_percentage']:.2f}%")
+            st.markdown(f"**Lowest Overlap**: {min_overlap_model} with {df_overlap.loc[min_overlap_model, 'overlap_percentage']:.2f}%")
+            st.info("A high overlap suggests that the model's global and local explanations are consistent, indicating a more stable and reliable model.")
+        except Exception as e:
+            st.error(f"Error generating overlap plot: {e}")
+    else:
+        st.warning("📤 Upload feature_overlap.csv to see the overlap analysis.")
+        st.info("💡 Expected format: CSV with models as rows and a column 'overlap_percentage'.")
+
+# =====================
+# 🤖 TAB 5: GENAI EXPLANATIONS
+# =====================
+with tab5:
+    st.header("🤖 GenAI Explanations")
+    
+    if genai_explanations:
+        st.markdown("These insights were generated automatically by a GenAI model to provide high-level, human-readable explanations of the pipeline results.")
+        st.markdown("---")
+        
+        # Display model comparison
+        if 'model_comparison' in genai_explanations:
+            st.subheader("Model Comparison Analysis")
+            st.info(genai_explanations['model_comparison'])
+            st.markdown("---")
+        
+        # Display individual model explanations
+        st.subheader("Individual Model Explanations")
+        model_exp_tabs = st.tabs([m.replace('_', ' ').title() for m in ['random_forest', 'xgboost', 'logistic_regression'] if m in genai_explanations])
+        for i, model in enumerate(['random_forest', 'xgboost', 'logistic_regression']):
+            if model in genai_explanations:
+                with model_exp_tabs[i]:
+                    st.markdown(f"#### Explanation for {model.replace('_', ' ').title()}")
+                    st.info(genai_explanations[model])
+                    
+    else:
+        st.warning("GenAI explanations not found. Please check your `results/genai_explanations/` folder.")
+
+# =====================
+# 💬 TAB 6: AI CHATBOT
+# =====================
+with tab6:
+    st.header("💬 AI Explainability Chatbot")
+    
+    st.info("Ask questions about the model performance, SHAP/LIME features, or overall insights. For example: 'Which features are most important for the XGBoost model?'")
+    
+    # Display chat messages from history
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            
+    # React to user input
+    if prompt := st.chat_input("Ask a question about the dashboard..."):
+        # Display user message
+        st.chat_message("user").markdown(prompt)
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        
+        # Generate and display AI response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = ai_chatbot_response(prompt, st.session_state.data_context)
+                st.markdown(response)
+                st.session_state.chat_history.append({"role": "assistant", "content": response})
+
+# =====================
+# 🔍 TAB 7: DETAILED INSIGHTS
+# =====================
+with tab7:
+    st.header("🔍 Dynamic Plot Generation Assistant")
+    
+    st.info("Describe the plot you want to see, and the AI will try to generate it. For example: 'Show me the F1 scores for all models' or 'Compare accuracy and precision for Random Forest and Logistic Regression'")
+    
+    # Text input for dynamic plot request
+    plot_request = st.text_input("Enter your plot request:", key="plot_request")
+    
+    if plot_request:
+        with st.spinner("Generating plot based on your request..."):
+            dynamic_fig = generate_ai_dynamic_plot(plot_request, st.session_state.data_context)
+            if dynamic_fig:
+                st.plotly_chart(dynamic_fig, use_container_width=True)
+            else:
+                st.error("Failed to generate plot. Please check the data and your request.")
