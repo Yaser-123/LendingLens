@@ -236,26 +236,30 @@ def load_genai_explanations():
             try:
                 with open(f"{genai_path}{model}_explanation.txt", 'r', encoding='utf-8') as f:
                     explanations[model] = f.read()
-            except Exception as e:
-                st.warning(f"Could not load {model} explanation: {e}")
+            except Exception:
+                # Suppress the warning message for missing files
+                pass
         
         # Load model comparison
         try:
             with open(f"{genai_path}model_comparison_analysis.txt", 'r', encoding='utf-8') as f:
                 explanations['model_comparison'] = f.read()
-        except Exception as e:
-            st.warning(f"Could not load model comparison: {e}")
+        except Exception:
+            # Suppress the warning message for missing file
+            pass
         
         # Load JSON data
         try:
             with open(f"{genai_path}genai_explanations.json", 'r', encoding='utf-8') as f:
                 explanations['json_data'] = json.load(f)
-        except Exception as e:
-            st.warning(f"Could not load JSON explanations: {e}")
+        except Exception:
+            # Suppress the warning message for missing file
+            pass
         
         return explanations
         
     except Exception as e:
+        # Keep the main error message if the entire process fails
         st.error(f"Error loading GenAI explanations: {e}")
         return {}
 
