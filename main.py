@@ -223,45 +223,93 @@ def load_csv_file(uploaded_file):
     return None
 
 @st.cache_data
-def load_genai_explanations():
-    """Load GenAI explanations from saved files"""
-    try:
-        base_path = os.getenv('RESULTS_PATH', 'c:/Users/T MOHAMED AMMAR/Desktop/Research/Coding/results')
-        genai_path = f"{base_path}/genai_explanations/"
-        
-        explanations = {}
-        
-        # Load text explanations
-        for model in ['random_forest', 'xgboost', 'logistic_regression']:
-            try:
-                with open(f"{genai_path}{model}_explanation.txt", 'r', encoding='utf-8') as f:
-                    explanations[model] = f.read()
-            except Exception:
-                # Suppress the warning message for missing files
-                pass
-        
-        # Load model comparison
+def load_genai_explanations(uploaded_files):
+    """Load GenAI explanations from uploaded files or local directory"""
+    explanations = {}
+    
+    file_map = {
+        'random_forest_explanation': 'random_forest_explanation.txt',
+        'xgboost_explanation': 'xgboost_explanation.txt',
+        'logistic_regression_explanation': 'logistic_regression_explanation.txt',
+        'model_comparison_analysis': 'model_comparison_analysis.txt',
+        'genai_explanations_json': 'genai_explanations.json'
+    }
+
+    def read_uploaded_file(file_key):
+        file = uploaded_files.get(file_key)
+        if file:
+            return file.getvalue().decode('utf-8')
+        return None
+
+    def read_local_file(file_name):
         try:
-            with open(f"{genai_path}model_comparison_analysis.txt", 'r', encoding='utf-8') as f:
-                explanations['model_comparison'] = f.read()
+            base_path = os.getenv('RESULTS_PATH', 'c:/Users/T MOHAMED AMMAR/Desktop/Research/Coding/results')
+            genai_path = os.path.join(base_path, 'genai_explanations')
+            file_path = os.path.join(genai_path, file_name)
+            if os.path.exists(file_path):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return f.read()
         except Exception:
-            # Suppress the warning message for missing file
             pass
-        
-        # Load JSON data
-        try:
-            with open(f"{genai_path}genai_explanations.json", 'r', encoding='utf-8') as f:
-                explanations['json_data'] = json.load(f)
-        except Exception:
-            # Suppress the warning message for missing file
-            pass
-        
-        return explanations
-        
-    except Exception as e:
-        # Keep the main error message if the entire process fails
-        st.error(f"Error loading GenAI explanations: {e}")
-        return {}
+        return None
+
+    for key, filename in file_map.items():
+        content = read_uploaded_file(key) or read_local_file(filename)
+        if content:
+            if filename.endswith('.json'):
+                try:
+                    explanations['json_data'] = json.loads(content)
+                except json.JSONDecodeError:
+                    st.warning(f"Could not parse uploaded JSON file: {filename}")
+            else:
+                explanations[key.replace('_explanation', '').replace('_json', '').replace('_analysis', '')] = content
+    
+    return explanations
+
+def calculate_overlap_jaccard(list1, list2):
+    """Calculate Jaccard Index for two lists"""
+    set1 = set(list1)
+    set2 = set(list2)
+    intersection = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    return (intersection / union) if union != 0 else 0
+
+def create_overlap_plot(df_overlap):
+    """Create interactive feature overlap plot with Jaccard Index calculation"""
+    if df_overlap is None or df_overlap.empty:
+        return None
+    
+    # Check for required columns
+    if 'shap_features' not in df_overlap.columns or 'lime_features' not in df_overlap.columns:
+        st.warning("Feature overlap CSV must contain 'shap_features' and 'lime_features' columns.")
+        return None
+
+    # Calculate Jaccard similarity
+    df_overlap['overlap_percentage'] = df_overlap.apply(
+        lambda row: calculate_overlap_jaccard(
+            eval(row['shap_features']),  # Safely parse string to list
+            eval(row['lime_features'])
+        ) * 100,
+        axis=1
+    )
+
+    fig = px.bar(
+        df_overlap, 
+        x=df_overlap.index, 
+        y='overlap_percentage', 
+        title='SHAP vs. LIME Overlap Percentage by Model',
+        labels={'overlap_percentage': 'Overlap %', 'index': 'Model'},
+        color='overlap_percentage',
+        color_continuous_scale='Inferno'
+    )
+    fig.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font_color='white',
+        title_font_color='white'
+    )
+    
+    return fig
 
 def prepare_data_context(df_perf, df_shap, df_lime, df_overlap, genai_explanations):
     """Prepare comprehensive data context for chatbot"""
@@ -363,6 +411,8 @@ def generate_ai_dynamic_plot(user_request: str, context: Dict[str, Any]) -> go.F
             return create_custom_shap_plot(models_to_compare, plot_specs.get("features_count", 10), title, context)
         elif data_source == "lime":
             return create_custom_lime_plot(models_to_compare, plot_specs.get("features_count", 10), title, context)
+        elif data_source == "overlap":
+            return create_overlap_plot(context.get("overlap_data", None))
         else:
             return create_custom_performance_plot(models_to_compare, metrics_to_show, title, chart_type, context)
             
@@ -718,27 +768,22 @@ def create_performance_plot(df_perf):
 st.sidebar.markdown("## 📂 Upload Pipeline Results")
 st.sidebar.markdown("Upload your CSV files from the ML pipeline")
 
-# File uploaders
-st.sidebar.markdown("### 📁 Upload Your CSV Files")
-perf_file = st.sidebar.file_uploader("📈 Model Performance CSV", 
-                                     type=["csv"], 
-                                     key="perf",
-                                     help="Upload CSV with columns: accuracy, f1, precision, recall")
+# File uploaders for core data
+st.sidebar.markdown("### 📁 Upload Data Files")
+perf_file = st.sidebar.file_uploader("📈 Model Performance CSV", type=["csv"], key="perf", help="Upload CSV with columns: accuracy, f1, precision, recall")
+shap_file = st.sidebar.file_uploader("🎯 SHAP Feature Importance CSV", type=["csv"], key="shap", help="Upload CSV with features as rows, models as columns")
+lime_file = st.sidebar.file_uploader("🍋 LIME Feature Importance CSV", type=["csv"], key="lime", help="Upload CSV with feature rules and weights")
+overlap_file = st.sidebar.file_uploader("🔗 Feature Overlap Analysis CSV", type=["csv"], key="overlap", help="Upload CSV with feature overlap data")
 
-shap_file = st.sidebar.file_uploader("🎯 SHAP Feature Importance CSV", 
-                                     type=["csv"], 
-                                     key="shap",
-                                     help="Upload CSV with features as rows, models as columns")
-
-lime_file = st.sidebar.file_uploader("🍋 LIME Feature Importance CSV", 
-                                     type=["csv"], 
-                                     key="lime",
-                                     help="Upload CSV with feature rules and weights")
-
-overlap_file = st.sidebar.file_uploader("🔗 Feature Overlap Analysis CSV", 
-                                        type=["csv"], 
-                                        key="overlap",
-                                        help="Upload CSV with overlap percentages by model")
+# File uploaders for GenAI content
+st.sidebar.markdown("### 🤖 Upload GenAI Explanations")
+genai_files = {
+    'random_forest_explanation': st.sidebar.file_uploader("Random Forest Explanation (TXT)", type="txt", key="rf_txt"),
+    'xgboost_explanation': st.sidebar.file_uploader("XGBoost Explanation (TXT)", type="txt", key="xgb_txt"),
+    'logistic_regression_explanation': st.sidebar.file_uploader("Logistic Regression Explanation (TXT)", type="txt", key="lr_txt"),
+    'model_comparison_analysis': st.sidebar.file_uploader("Model Comparison Analysis (TXT)", type="txt", key="comp_txt"),
+    'genai_explanations_json': st.sidebar.file_uploader("GenAI Explanations (JSON)", type="json", key="genai_json")
+}
 
 # Load data
 df_perf = load_csv_file(perf_file)
@@ -746,8 +791,8 @@ df_shap = load_csv_file(shap_file)
 df_lime = load_csv_file(lime_file)
 df_overlap = load_csv_file(overlap_file)
 
-# Load GenAI explanations
-genai_explanations = load_genai_explanations()
+# Load GenAI explanations, prioritizing uploaded files
+genai_explanations = load_genai_explanations(genai_files)
 
 # Prepare data context for chatbot
 st.session_state.data_context = prepare_data_context(df_perf, df_shap, df_lime, df_overlap, genai_explanations)
@@ -755,10 +800,10 @@ st.session_state.data_context = prepare_data_context(df_perf, df_shap, df_lime, 
 # Data status indicators
 st.sidebar.markdown("### 📊 Data Status")
 data_status = {
-    "Model Performance": "✅" if df_perf is not None else "❌",
-    "SHAP Analysis": "✅" if df_shap is not None else "❌",
-    "LIME Analysis": "✅" if df_lime is not None else "❌",
-    "Feature Overlap": "✅" if df_overlap is not None else "❌",
+    "Model Performance": "✅" if df_perf is not None and not df_perf.empty else "❌",
+    "SHAP Analysis": "✅" if df_shap is not None and not df_shap.empty else "❌",
+    "LIME Analysis": "✅" if df_lime is not None and not df_lime.empty else "❌",
+    "Feature Overlap": "✅" if df_overlap is not None and not df_overlap.empty else "❌",
     "GenAI Explanations": "✅" if genai_explanations else "❌"
 }
 
@@ -774,7 +819,6 @@ if any([df_perf is not None, df_shap is not None, df_lime is not None]):
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        # Generate comprehensive insights
         insights_text = ""
         
         if df_perf is not None:
@@ -792,7 +836,6 @@ if any([df_perf is not None, df_shap is not None, df_lime is not None]):
         st.markdown(f'<div class="insight-box">{insights_text}</div>', unsafe_allow_html=True)
     
     with col2:
-        # Key metrics summary
         if df_perf is not None:
             st.markdown("### 📊 Quick Metrics")
             try:
@@ -824,26 +867,19 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 # =====================
 with tab1:
     st.header("🏆 Model Performance Analysis")
-    
     if df_perf is not None and not df_perf.empty:
         col1, col2 = st.columns([2, 1])
-        
         with col1:
-            # Interactive performance plot
             perf_fig = create_performance_plot(df_perf)
             if perf_fig:
                 st.plotly_chart(perf_fig, use_container_width=True)
-        
         with col2:
             st.subheader("📊 Performance Table")
             st.dataframe(df_perf.round(3), use_container_width=True)
-        
-        # Model comparison insights
         st.subheader("📋 Model Analysis")
         if 'f1' in df_perf.columns and not df_perf.empty:
             best_model = df_perf['f1'].idxmax()
             worst_model = df_perf['f1'].idxmin()
-            
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("🥇 Best Model (F1)", best_model, f"{df_perf.loc[best_model, 'f1']:.3f}")
@@ -860,34 +896,23 @@ with tab1:
 # =====================
 with tab2:
     st.header("🎯 SHAP Feature Importance Analysis")
-    
     if df_shap is not None and not df_shap.empty:
-        # Model selection for SHAP
         available_models = [col for col in df_shap.columns if col not in ['Unnamed: 0', 'index']]
-        
         if not available_models:
             st.warning("No model columns found in SHAP data")
             st.dataframe(df_shap.head())
         else:
             selected_model = st.selectbox("Select Model for SHAP Analysis", available_models)
-            
             if selected_model in df_shap.columns:
                 col1, col2 = st.columns([2, 1])
-                
                 with col1:
-                    # SHAP importance plot
                     try:
-                        # Get the SHAP values for the selected model
                         shap_values = df_shap[selected_model]
-                        
-                        # Remove any non-numeric or zero values
                         numeric_shap = pd.to_numeric(shap_values, errors='coerce')
                         numeric_shap = numeric_shap.dropna()
-                        numeric_shap = numeric_shap[numeric_shap != 0]  # Remove zero values
-                        
+                        numeric_shap = numeric_shap[numeric_shap != 0]
                         if len(numeric_shap) > 0:
                             top_shap = numeric_shap.nlargest(15)
-                            
                             fig = px.bar(
                                 x=top_shap.values,
                                 y=top_shap.index,
@@ -897,20 +922,12 @@ with tab2:
                                 color=top_shap.values,
                                 color_continuous_scale='Viridis'
                             )
-                            fig.update_layout(
-                                height=600,
-                                plot_bgcolor='rgba(0,0,0,0)',
-                                paper_bgcolor='rgba(0,0,0,0)',
-                                font_color='white',
-                                title_font_color='white'
-                            )
-                            
+                            fig.update_layout(height=600, plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font_color='white', title_font_color='white')
                             st.plotly_chart(fig, use_container_width=True)
                         else:
                             st.info("No non-zero SHAP values to plot for this model.")
                     except Exception as e:
                         st.error(f"Error generating SHAP plot: {e}")
-                
                 with col2:
                     st.subheader("Raw SHAP Data")
                     st.dataframe(df_shap[selected_model].sort_values(ascending=False).round(5))
@@ -925,29 +942,23 @@ with tab2:
 # =====================
 with tab3:
     st.header("🍋 LIME Feature Importance Analysis")
-    
     if df_lime is not None and not df_lime.empty:
         available_models = [col for col in df_lime.columns if col not in ['Unnamed: 0', 'index']]
-        
         if not available_models:
             st.warning("No model columns found in LIME data")
             st.dataframe(df_lime.head())
         else:
             selected_model = st.selectbox("Select Model for LIME Analysis", available_models)
-            
             if selected_model in df_lime.columns:
                 col1, col2 = st.columns([2, 1])
-                
                 with col1:
                     try:
                         lime_values = df_lime[selected_model]
                         numeric_lime = pd.to_numeric(lime_values, errors='coerce')
                         numeric_lime = numeric_lime.dropna()
                         numeric_lime = numeric_lime[numeric_lime != 0]
-                        
                         if len(numeric_lime) > 0:
                             top_lime = numeric_lime.nlargest(15)
-                            
                             fig = px.bar(
                                 x=top_lime.values,
                                 y=top_lime.index,
@@ -957,19 +968,12 @@ with tab3:
                                 color=top_lime.values,
                                 color_continuous_scale='Plasma'
                             )
-                            fig.update_layout(
-                                height=600,
-                                plot_bgcolor='rgba(0,0,0,0)',
-                                paper_bgcolor='rgba(0,0,0,0)',
-                                font_color='white',
-                                title_font_color='white'
-                            )
+                            fig.update_layout(height=600, plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font_color='white', title_font_color='white')
                             st.plotly_chart(fig, use_container_width=True)
                         else:
                             st.info("No non-zero LIME values to plot for this model.")
                     except Exception as e:
                         st.error(f"Error generating LIME plot: {e}")
-                
                 with col2:
                     st.subheader("Raw LIME Data")
                     st.dataframe(df_lime[selected_model].sort_values(ascending=False).round(5))
@@ -984,57 +988,41 @@ with tab3:
 # =====================
 with tab4:
     st.header("🔗 SHAP vs. LIME Feature Overlap Analysis")
-    
     if df_overlap is not None and not df_overlap.empty:
-        st.markdown("### 📊 Overlap Percentage by Model")
-        st.dataframe(df_overlap.round(2))
-        
+        st.markdown("### 📊 Overlap Data")
+        st.dataframe(df_overlap)
         try:
-            fig = px.bar(df_overlap, 
-                         x=df_overlap.index, 
-                         y='overlap_percentage', 
-                         title='SHAP vs. LIME Overlap Percentage by Model',
-                         labels={'overlap_percentage': 'Overlap %', 'index': 'Model'},
-                         color='overlap_percentage',
-                         color_continuous_scale='Inferno')
-            fig.update_layout(
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                font_color='white',
-                title_font_color='white'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            st.subheader("📋 Overlap Insights")
-            max_overlap_model = df_overlap['overlap_percentage'].idxmax()
-            min_overlap_model = df_overlap['overlap_percentage'].idxmin()
-            
-            st.markdown(f"**Highest Overlap**: {max_overlap_model} with {df_overlap.loc[max_overlap_model, 'overlap_percentage']:.2f}%")
-            st.markdown(f"**Lowest Overlap**: {min_overlap_model} with {df_overlap.loc[min_overlap_model, 'overlap_percentage']:.2f}%")
-            st.info("A high overlap suggests that the model's global and local explanations are consistent, indicating a more stable and reliable model.")
+            overlap_fig = create_overlap_plot(df_overlap.copy()) # Use a copy to avoid modifying original df
+            if overlap_fig:
+                st.plotly_chart(overlap_fig, use_container_width=True)
+                st.subheader("📋 Overlap Insights")
+                # Add insights based on the calculated 'overlap_percentage' column
+                max_overlap_model = df_overlap['overlap_percentage'].idxmax()
+                min_overlap_model = df_overlap['overlap_percentage'].idxmin()
+                st.markdown(f"**Highest Overlap**: {max_overlap_model} with {df_overlap.loc[max_overlap_model, 'overlap_percentage']:.2f}%")
+                st.markdown(f"**Lowest Overlap**: {min_overlap_model} with {df_overlap.loc[min_overlap_model, 'overlap_percentage']:.2f}%")
+                st.info("A high overlap suggests that the model's global and local explanations are consistent, indicating a more stable and reliable model.")
+            else:
+                st.warning("Could not generate overlap plot. Please check the CSV format.")
         except Exception as e:
             st.error(f"Error generating overlap plot: {e}")
+            st.dataframe(df_overlap)
     else:
         st.warning("📤 Upload feature_overlap.csv to see the overlap analysis.")
-        st.info("💡 Expected format: CSV with models as rows and a column 'overlap_percentage'.")
+        st.info("💡 Expected format: CSV with a model index and columns 'shap_features' and 'lime_features' containing string representations of Python lists.")
 
 # =====================
 # 🤖 TAB 5: GENAI EXPLANATIONS
 # =====================
 with tab5:
     st.header("🤖 GenAI Explanations")
-    
     if genai_explanations:
         st.markdown("These insights were generated automatically by a GenAI model to provide high-level, human-readable explanations of the pipeline results.")
         st.markdown("---")
-        
-        # Display model comparison
         if 'model_comparison' in genai_explanations:
             st.subheader("Model Comparison Analysis")
             st.info(genai_explanations['model_comparison'])
             st.markdown("---")
-        
-        # Display individual model explanations
         st.subheader("Individual Model Explanations")
         model_exp_tabs = st.tabs([m.replace('_', ' ').title() for m in ['random_forest', 'xgboost', 'logistic_regression'] if m in genai_explanations])
         for i, model in enumerate(['random_forest', 'xgboost', 'logistic_regression']):
@@ -1042,30 +1030,21 @@ with tab5:
                 with model_exp_tabs[i]:
                     st.markdown(f"#### Explanation for {model.replace('_', ' ').title()}")
                     st.info(genai_explanations[model])
-                    
     else:
-        st.warning("GenAI explanations not found. Please check your `results/genai_explanations/` folder.")
+        st.warning("GenAI explanations not found. Please upload the explanation files in the sidebar.")
 
 # =====================
 # 💬 TAB 6: AI CHATBOT
 # =====================
 with tab6:
     st.header("💬 AI Explainability Chatbot")
-    
     st.info("Ask questions about the model performance, SHAP/LIME features, or overall insights. For example: 'Which features are most important for the XGBoost model?'")
-    
-    # Display chat messages from history
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            
-    # React to user input
     if prompt := st.chat_input("Ask a question about the dashboard..."):
-        # Display user message
         st.chat_message("user").markdown(prompt)
         st.session_state.chat_history.append({"role": "user", "content": prompt})
-        
-        # Generate and display AI response
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 response = ai_chatbot_response(prompt, st.session_state.data_context)
@@ -1077,12 +1056,8 @@ with tab6:
 # =====================
 with tab7:
     st.header("🔍 Dynamic Plot Generation Assistant")
-    
     st.info("Describe the plot you want to see, and the AI will try to generate it. For example: 'Show me the F1 scores for all models' or 'Compare accuracy and precision for Random Forest and Logistic Regression'")
-    
-    # Text input for dynamic plot request
     plot_request = st.text_input("Enter your plot request:", key="plot_request")
-    
     if plot_request:
         with st.spinner("Generating plot based on your request..."):
             dynamic_fig = generate_ai_dynamic_plot(plot_request, st.session_state.data_context)
